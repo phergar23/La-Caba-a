@@ -261,6 +261,14 @@ button:disabled { opacity: 0.4; cursor: default; background: #15110d; border-col
 #lockhint small { display: block; font-size: 12px; color: var(--ink-dim); margin-top: 4px; }
 @keyframes lockhint { 50% { opacity: 0.6; } }
 body.free-mouse #view { cursor: crosshair; }
+.verbadge {
+  position: fixed; top: 14px; right: 16px; z-index: 30; pointer-events: none;
+  padding: 6px 12px; border: 2px solid var(--gold); background: rgba(0,0,0,0.75);
+  color: var(--gold); font-family: 'Courier New', monospace; font-size: 16px; letter-spacing: 2px;
+}
+.verbadge b { font-size: 26px; color: #fff; margin-left: 6px; vertical-align: -2px; }
+#hudver { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); font-family: 'Courier New', monospace; font-size: 12px; color: var(--ink-dim); opacity: 0.8; }
+#pause-mouse { color: #c8a060; }
 
 /* ---------- Multijugador ---------- */
 .mp-panel { max-width: 640px; }
@@ -368,6 +376,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
     <div id="weapon"><div id="weapon-name"></div><div id="weapon-ammo"></div></div>
     <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
     <div id="mpbadge"></div>
+    <div id="hudver">v<span class="game-version">1.5</span></div>
     <div id="mon-mini" class="hidden">
       <div id="mm-title"></div>
       <div id="mm-bar"><div id="mm-zone"></div><div id="mm-needle"></div></div>
@@ -403,6 +412,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
       </div>
       <p class="hint">Recomendado: auriculares. Sube el volumen. Apaga la luz.</p>
     </div>
+    <div class="verbadge">VERSIÓN <b class="game-version">1.5</b></div>
   </div>
 
   <!-- Multijugador -->
@@ -454,10 +464,13 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
       <h2>PAUSA</h2>
       <div class="buttons">
         <button id="btn-resume">Reanudar</button>
+        <button id="btn-fullscreen">Pantalla completa</button>
         <button id="btn-quality">Calidad: Retro</button>
         <button id="btn-quit">Salir al menú</button>
       </div>
       <p id="pause-mp" class="hint hidden">Multijugador: la partida sigue mientras estás en pausa.</p>
+      <p id="pause-mouse" class="hint hidden"></p>
+      <div class="verbadge">VERSIÓN <b class="game-version">1.5</b></div>
       <label class="slider">Sensibilidad <input id="opt-sens" type="range" min="0.3" max="2.5" step="0.1" value="1"></label>
       <label class="slider">Volumen <input id="opt-vol" type="range" min="0" max="1" step="0.05" value="0.85"></label>
       <label class="slider">Campo de visión <input id="opt-fov" type="range" min="60" max="95" step="1" value="72"></label>
@@ -503,6 +516,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
 
   <div id="loading">
     <div>Cargando el bosque...</div>
+    <div class="verbadge">VERSIÓN <b>1.5</b></div>
     <div class="load-help">Si se queda aquí: descarga el archivo y ábrelo en Chrome, Edge o Firefox en un ordenador. Las vistas previas de las apps y de los móviles no ejecutan el juego.</div>
   </div>
 
@@ -541,6 +555,9 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
 </script>
   <script>
 'use strict';
+
+// Versión visible en el menú y la pausa (para saber qué copia del juego tienes abierta)
+const GAME_VERSION = '1.5';
 
 // Ajustes generales del juego. Casi todo el balance se toca desde aquí.
 const CFG = {
@@ -12242,7 +12259,40 @@ class Game {
     if (this.freeMouse) return;
     this.freeMouse = true;
     document.body.classList.add('free-mouse');
-    if (this.hud) this.hud.msg('Aquí el navegador no deja capturar el ratón. Para girar, lleva el puntero a los bordes de la pantalla o usa ← →.', 8);
+    if (this.hud) this.hud.msg(this.mouseAdvice(), 10);
+  }
+
+  // Por qué no se captura el ratón y qué hacer (se ve en el mensaje y en la pausa)
+  mouseAdvice() {
+    let framed = false;
+    try { framed = window.self !== window.top; } catch (e) { framed = true; }
+    return framed
+      ? 'Dentro de esta página no se puede capturar el ratón. Para jugar bien, abre el juego en su propia pestaña (por ejemplo, en tu GitHub Pages). Mientras, gira con los bordes de la pantalla o con ← →.'
+      : 'El navegador no deja capturar el ratón. Prueba en pantalla completa (Esc → Pantalla completa). Mientras, gira llevando el puntero a los bordes de la pantalla o con ← →.';
+  }
+
+  // Pantalla completa: el puntero ya no puede salirse de la ventana y el navegador suele dejar capturarlo
+  toggleFullscreen() {
+    const d = document;
+    const el = d.documentElement;
+    const isFull = d.fullscreenElement || d.webkitFullscreenElement;
+    try {
+      if (isFull) {
+        (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+        return;
+      }
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (!req) { this.hud.msg('Este navegador no permite pantalla completa desde la página. En Mac: Ctrl + Cmd + F.', 6); return; }
+      const p = req.call(el);
+      const then = () => {
+        if (this.state === 'paused') this.resume();
+        else this.requestLock(true);
+      };
+      if (p && p.then) p.then(then, () => this.hud.msg('No se pudo poner la pantalla completa. En Mac: Ctrl + Cmd + F.', 6));
+      else setTimeout(then, 200);
+    } catch (e) {
+      this.hud.msg('No se pudo poner la pantalla completa. En Mac: Ctrl + Cmd + F.', 6);
+    }
   }
 
   // Sin captura: girar llevando el puntero a los bordes de la ventana
@@ -12250,7 +12300,7 @@ class Game {
     const m = this.mouse;
     if (!this.freeMouse || this.locked || !m.inside || this.monitor || this.state !== 'playing') return;
     const P = this.player;
-    const E = 0.09;
+    const E = 0.12;
     const x = m.x / innerWidth, y = m.y / innerHeight;
     const s = this.settings.sens;
     if (x < E) P.yaw += ((E - x) / E) * 2.6 * s * dt;
@@ -12272,6 +12322,10 @@ class Game {
     this.state = 'paused';
     this.clearInput();
     this.exitLock();
+    const pm = document.getElementById('pause-mouse');
+    pm.textContent = this.freeMouse ? this.mouseAdvice() : '';
+    pm.classList.toggle('hidden', !this.freeMouse);
+    document.getElementById('btn-fullscreen').textContent = document.fullscreenElement || document.webkitFullscreenElement ? 'Salir de pantalla completa' : 'Pantalla completa';
     document.getElementById('pause').classList.remove('hidden');
   }
 
@@ -12382,6 +12436,8 @@ class Game {
     $('btn-new').addEventListener('click', () => { SFX.init(); this.newGame(); });
     $('btn-continue').addEventListener('click', () => { SFX.init(); this.load(); });
     $('btn-resume').addEventListener('click', () => this.resume());
+    $('btn-fullscreen').addEventListener('click', () => this.toggleFullscreen());
+    document.querySelectorAll('.game-version').forEach((el) => (el.textContent = GAME_VERSION));
     $('btn-quit').addEventListener('click', () => this.toMenu());
     $('btn-go-menu').addEventListener('click', () => this.toMenu());
     $('btn-retry').addEventListener('click', () => this.load());
