@@ -49,8 +49,8 @@ html, body {
 #view {
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   filter: contrast(1.08) saturate(0.82) sepia(0.12);
@@ -269,6 +269,14 @@ body.free-mouse #view { cursor: crosshair; }
 .verbadge b { font-size: 26px; color: #fff; margin-left: 6px; vertical-align: -2px; }
 #hudver { position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%); font-family: 'Courier New', monospace; font-size: 12px; color: var(--ink-dim); opacity: 0.8; }
 #pause-mouse { color: #c8a060; }
+/* Botón de pausa en pantalla: solo en aparatos táctiles (iPad), que no tienen Esc */
+#btn-pausa {
+  display: none; position: absolute; top: 58px; right: 16px; pointer-events: auto;
+  min-width: 0; width: 46px; height: 46px; padding: 0; font-size: 18px; font-weight: bold;
+  background: rgba(0,0,0,0.55); border: 1px solid var(--line); color: var(--ink);
+}
+body.touch #btn-pausa { display: block; }
+body.touch #msgs { top: 116px; }
 
 /* ---------- Multijugador ---------- */
 .mp-panel { max-width: 640px; }
@@ -376,7 +384,8 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
     <div id="weapon"><div id="weapon-name"></div><div id="weapon-ammo"></div></div>
     <div id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
     <div id="mpbadge"></div>
-    <div id="hudver">v<span class="game-version">1.5</span></div>
+    <div id="hudver">v<span class="game-version">1.6</span></div>
+    <button id="btn-pausa" aria-label="Pausa">II</button>
     <div id="mon-mini" class="hidden">
       <div id="mm-title"></div>
       <div id="mm-bar"><div id="mm-zone"></div><div id="mm-needle"></div></div>
@@ -412,7 +421,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
       </div>
       <p class="hint">Recomendado: auriculares. Sube el volumen. Apaga la luz.</p>
     </div>
-    <div class="verbadge">VERSIÓN <b class="game-version">1.5</b></div>
+    <div class="verbadge">VERSIÓN <b class="game-version">1.6</b></div>
   </div>
 
   <!-- Multijugador -->
@@ -470,7 +479,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
       </div>
       <p id="pause-mp" class="hint hidden">Multijugador: la partida sigue mientras estás en pausa.</p>
       <p id="pause-mouse" class="hint hidden"></p>
-      <div class="verbadge">VERSIÓN <b class="game-version">1.5</b></div>
+      <div class="verbadge">VERSIÓN <b class="game-version">1.6</b></div>
       <label class="slider">Sensibilidad <input id="opt-sens" type="range" min="0.3" max="2.5" step="0.1" value="1"></label>
       <label class="slider">Volumen <input id="opt-vol" type="range" min="0" max="1" step="0.05" value="0.85"></label>
       <label class="slider">Campo de visión <input id="opt-fov" type="range" min="60" max="95" step="1" value="72"></label>
@@ -516,7 +525,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
 
   <div id="loading">
     <div>Cargando el bosque...</div>
-    <div class="verbadge">VERSIÓN <b>1.5</b></div>
+    <div class="verbadge">VERSIÓN <b>1.6</b></div>
     <div class="load-help">Si se queda aquí: descarga el archivo y ábrelo en Chrome, Edge o Firefox en un ordenador. Las vistas previas de las apps y de los móviles no ejecutan el juego.</div>
   </div>
 
@@ -557,7 +566,7 @@ function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"f
 'use strict';
 
 // Versión visible en el menú y la pausa (para saber qué copia del juego tienes abierta)
-const GAME_VERSION = '1.5';
+const GAME_VERSION = '1.6';
 
 // Ajustes generales del juego. Casi todo el balance se toca desde aquí.
 const CFG = {
@@ -11555,6 +11564,17 @@ class Game {
     r.useLegacyLights = true;
     r.autoClear = false;
     r.setPixelRatio(1);
+    // Look retro: la escena se dibuja pequeña en una textura y luego se amplía con píxeles nítidos
+    // al tamaño real de la pantalla. Así no depende de que el navegador respete image-rendering
+    // (Safari en el iPad suavizaba la ampliación y todo se veía borroso).
+    this.lowRT = new THREE.WebGLRenderTarget(4, 4, {
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false,
+    });
+    this.blitScene = new THREE.Scene();
+    this.blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const blit = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ map: this.lowRT.texture, depthTest: false, depthWrite: false }));
+    blit.frustumCulled = false;
+    this.blitScene.add(blit);
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(72, innerWidth / innerHeight, 0.08, 170);
@@ -12402,13 +12422,18 @@ class Game {
     });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('mousemove', (e) => {
-      this.mouse.x = e.clientX;
-      this.mouse.y = e.clientY;
-      this.mouse.inside = true;
+      const m = this.mouse;
+      const cdx = m.has ? e.clientX - m.x : 0, cdy = m.has ? e.clientY - m.y : 0;
+      m.x = e.clientX;
+      m.y = e.clientY;
+      m.inside = true;
+      m.has = true;
       if (this.state !== 'playing') return;
       if (!this.locked && !this.freeMouse) return;
       if (this.monitor) return;
-      const dx = e.movementX || 0, dy = e.movementY || 0;
+      let dx = e.movementX || 0, dy = e.movementY || 0;
+      // Sin captura, algunos navegadores (Safari en iPad) no dan el desplazamiento: se calcula a mano
+      if (!this.locked && dx === 0 && dy === 0) { dx = cdx; dy = cdy; }
       if (Math.abs(dx) > 400 || Math.abs(dy) > 400) return;
       this.player.look(dx, dy);
       this.inp.mdx += dx;
@@ -12437,6 +12462,10 @@ class Game {
     $('btn-continue').addEventListener('click', () => { SFX.init(); this.load(); });
     $('btn-resume').addEventListener('click', () => this.resume());
     $('btn-fullscreen').addEventListener('click', () => this.toggleFullscreen());
+    $('btn-pausa').addEventListener('click', (e) => { e.stopPropagation(); this.pause(); });
+    // iPad con ratón y sin teclado: tocar la pantalla con el dedo suelta el ratón (y se abre la pausa)
+    window.addEventListener('touchstart', () => { if (this.locked) this.exitLock(); }, { passive: true });
+    if (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) document.body.classList.add('touch');
     document.querySelectorAll('.game-version').forEach((el) => (el.textContent = GAME_VERSION));
     $('btn-quit').addEventListener('click', () => this.toMenu());
     $('btn-go-menu').addEventListener('click', () => this.toMenu());
@@ -12523,7 +12552,10 @@ class Game {
   resize() {
     const s = CFG.QUALITY[this.settings.quality].scale;
     const w = innerWidth, h = innerHeight;
-    this.renderer.setSize(Math.max(1, Math.ceil(w / s)), Math.max(1, Math.ceil(h / s)), false);
+    // El lienzo va a la resolución real de la pantalla; la escena, a la resolución baja
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setSize(w, h, false);
+    this.lowRT.setSize(Math.max(1, Math.ceil(w / s)), Math.max(1, Math.ceil(h / s)));
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     if (this.weapons) this.weapons.resize(w / h);
@@ -12623,7 +12655,17 @@ class Game {
 
   render() {
     const r = this.renderer;
+    r.setRenderTarget(this.lowRT);
     r.clear();
+    this.drawScene();
+    // Ampliación a pantalla completa con píxeles nítidos
+    r.setRenderTarget(null);
+    r.clear();
+    r.render(this.blitScene, this.blitCam);
+  }
+
+  drawScene() {
+    const r = this.renderer;
     if (this.monitor && this.state === 'playing' || (this.monitor && this.state === 'paused')) {
       // Visión nocturna de la cámara de seguridad
       const W = this.world;
