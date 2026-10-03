@@ -251,6 +251,17 @@ button:disabled { opacity: 0.4; cursor: default; background: #15110d; border-col
 #go-sub { font-size: 18px; }
 #go-stats { color: var(--ink-dim); line-height: 1.7; }
 
+/* Aviso para capturar el ratón */
+#lockhint {
+  position: absolute; left: 50%; top: 92px; transform: translateX(-50%); pointer-events: none; z-index: 2;
+  width: max-content; max-width: min(300px, 80vw);
+  background: rgba(0,0,0,0.85); border: 1px solid var(--blood); padding: 10px 18px; font-size: 16px; color: var(--ink);
+  text-align: center; animation: lockhint 1.6s ease-in-out infinite;
+}
+#lockhint small { display: block; font-size: 12px; color: var(--ink-dim); margin-top: 4px; }
+@keyframes lockhint { 50% { opacity: 0.6; } }
+body.free-mouse #view { cursor: crosshair; }
+
 /* ---------- Multijugador ---------- */
 .mp-panel { max-width: 640px; }
 .mp-text { color: var(--ink); font-size: 16px; margin: 6px 0; }
@@ -342,6 +353,7 @@ body.monster-view #money, body.monster-view #power, body.monster-view #money:emp
     <div id="money">$ 0</div>
     <div id="tasks"></div>
     <div id="crosshair"></div>
+    <div id="lockhint" class="hidden">Haz clic en la pantalla para mirar con el ratón<small>Esc lo suelta</small></div>
     <div id="prompt"></div>
     <div id="subs"></div>
     <div id="msgs"></div>
@@ -11498,9 +11510,14 @@ class Game {
     this.viewLight = 0.5;
     this.target = null;
     this.inp = { fwd: false, back: false, left: false, right: false, sprint: false, fire: false, turnL: false, turnR: false, mdx: 0, mdy: 0 };
+    // Ratón: locked = capturado (gira sin límite); freeMouse = el navegador no deja capturarlo
     this.locked = false;
     this.everLocked = false;
     this.freeMouse = false;
+    this.lockReq = null;
+    this.lockFails = 0;
+    this.mouse = { x: 0, y: 0, inside: false };
+    this.lockHintOn = false;
     this.hbT = 0;
     this.last = performance.now();
     this.menuT = 0;
@@ -11992,7 +12009,7 @@ class Game {
       this.missions.spawnDay(1);
       this.intruder.startDay();
     }
-    this.beginPlay();
+    this.beginPlay(false);
     if (role === 'ranger') {
       this.hud.banner('DÍA 1 · GUARDABOSQUES', `El monstruo lo controla otra persona. Prepárate de día y aguanta ${CFG.MP.NIGHTS} noches.`, 6);
       setTimeout(() => this.mp === this.lobby && this.hud.msg('En multijugador la ferretería de Julián vende bengalas desde el primer día.', 6), 6500);
@@ -12019,7 +12036,8 @@ class Game {
     SFX.sting();
   }
 
-  beginPlay() {
+  // gesture: se llama desde un clic o una tecla (en multijugador la partida empieza sola)
+  beginPlay(gesture = true) {
     SFX.init();
     SFX.setVolume(this.settings.vol);
     this.state = 'playing';
@@ -12028,7 +12046,7 @@ class Game {
     ['menu', 'mp', 'pause', 'gameover', 'shop', 'note'].forEach((id) => document.getElementById(id).classList.add('hidden'));
     document.getElementById('pause-mp').classList.toggle('hidden', !this.mp);
     this.hud.show(true);
-    this.requestLock();
+    this.requestLock(gesture);
   }
 
   // ---------- Monitor de cámaras del búnker ----------
@@ -12192,13 +12210,18 @@ class Game {
     this.player.aiming = false;
   }
 
-  requestLock() {
-    if (this.freeMouse) return;
+  // Captura el ratón para girar sin límites. Los navegadores solo la conceden justo después de
+  // un clic o una tecla (gesture); si se pide sin eso, el fallo no cuenta y se pide un clic.
+  requestLock(gesture = true) {
+    if (this.locked || (this.freeMouse && !gesture)) return;
+    const c = this.canvas;
+    if (!c.requestPointerLock) { this.useFreeMouse(); return; }
+    const req = (this.lockReq = { gesture, done: false });
     try {
-      const p = this.canvas.requestPointerLock();
-      if (p && p.catch) p.catch(() => this.lockFailed());
+      const p = c.requestPointerLock();
+      if (p && p.catch) p.catch(() => this.lockFailed(req));
     } catch (e) {
-      this.lockFailed();
+      this.lockFailed(req);
     }
   }
 
@@ -12206,12 +12229,42 @@ class Game {
     if (document.pointerLockElement) document.exitPointerLock();
   }
 
-  lockFailed() {
-    if (this.everLocked) return;
-    if (!this.freeMouse) {
-      this.freeMouse = true;
-      if (this.hud) this.hud.msg('No se pudo capturar el ratón: mueve el ratón sobre la pantalla o usa ← → para girar.', 7);
-    }
+  lockFailed(req = this.lockReq) {
+    if (!req || req.done || this.locked) return;
+    req.done = true;
+    if (!req.gesture) return;
+    // Dos clics seguidos sin conseguirlo: el navegador no lo permite (p. ej. dentro de algunas páginas)
+    this.lockFails++;
+    if (this.lockFails >= 2 && !this.everLocked) this.useFreeMouse();
+  }
+
+  useFreeMouse() {
+    if (this.freeMouse) return;
+    this.freeMouse = true;
+    document.body.classList.add('free-mouse');
+    if (this.hud) this.hud.msg('Aquí el navegador no deja capturar el ratón. Para girar, lleva el puntero a los bordes de la pantalla o usa ← →.', 8);
+  }
+
+  // Sin captura: girar llevando el puntero a los bordes de la ventana
+  edgeTurn(dt) {
+    const m = this.mouse;
+    if (!this.freeMouse || this.locked || !m.inside || this.monitor || this.state !== 'playing') return;
+    const P = this.player;
+    const E = 0.09;
+    const x = m.x / innerWidth, y = m.y / innerHeight;
+    const s = this.settings.sens;
+    if (x < E) P.yaw += ((E - x) / E) * 2.6 * s * dt;
+    else if (x > 1 - E) P.yaw -= ((x - (1 - E)) / E) * 2.6 * s * dt;
+    if (y < E) P.pitch = Math.min(1.45, P.pitch + ((E - y) / E) * 1.4 * s * dt);
+    else if (y > 1 - E) P.pitch = Math.max(-1.45, P.pitch - ((y - (1 - E)) / E) * 1.4 * s * dt);
+  }
+
+  // Aviso de «haz clic» mientras el ratón no está capturado
+  updateLockHint() {
+    const on = this.state === 'playing' && !this.locked && !this.freeMouse && !this.monitor && !this.player.dead;
+    if (on === this.lockHintOn) return;
+    this.lockHintOn = on;
+    document.getElementById('lockhint').classList.toggle('hidden', !on);
   }
 
   pause() {
@@ -12281,7 +12334,10 @@ class Game {
     this.canvas.addEventListener('mousedown', (e) => {
       if (this.state !== 'playing') return;
       if (this.monitor) { if (e.button === 0) this.switchCam(1); return; }
-      if (!this.locked && !this.freeMouse) { this.requestLock(); return; }
+      if (!this.locked) {
+        this.requestLock(true);
+        if (!this.freeMouse) return;
+      }
       if (this.role === 'monster' && this.mp) { if (e.button === 0) this.mp.monsterClick(); return; }
       if (e.button === 0) this.inp.fire = true;
       if (e.button === 2) this.player.aiming = this.weapons.current !== 'none';
@@ -12292,6 +12348,9 @@ class Game {
     });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('mousemove', (e) => {
+      this.mouse.x = e.clientX;
+      this.mouse.y = e.clientY;
+      this.mouse.inside = true;
       if (this.state !== 'playing') return;
       if (!this.locked && !this.freeMouse) return;
       if (this.monitor) return;
@@ -12304,9 +12363,15 @@ class Game {
     window.addEventListener('wheel', (e) => {
       if (this.state === 'playing' && this.role !== 'monster') this.weapons.cycle(e.deltaY > 0 ? 1 : -1);
     }, { passive: true });
+    document.addEventListener('mouseout', (e) => { if (!e.relatedTarget) this.mouse.inside = false; });
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.canvas;
-      if (this.locked) this.everLocked = true;
+      if (this.locked) {
+        this.everLocked = true;
+        this.lockFails = 0;
+        if (this.lockReq) this.lockReq.done = true;
+        if (this.freeMouse) { this.freeMouse = false; document.body.classList.remove('free-mouse'); }
+      }
       if (!this.locked && this.state === 'playing') this.pause();
     });
     document.addEventListener('pointerlockerror', () => this.lockFailed());
@@ -12416,6 +12481,7 @@ class Game {
     this.last = now;
     // La red va con el tiempo real (aunque el ordenador vaya a pocos fotogramas)
     if (this.lobby) this.lobby.tick(Math.min(1, raw));
+    this.updateLockHint();
     // En multijugador el mundo no se para aunque abras la pausa, una tienda o una nota
     if (this.state === 'playing' || (this.mp && ['paused', 'shop', 'reading', 'sleeping'].includes(this.state))) this.update(dt);
     else if (this.state === 'menu') this.updateMenu(dt);
@@ -12437,6 +12503,7 @@ class Game {
     this.daylight = this.daylightAt(this.clock);
     this.world.updateSky(this.daylight, this.duskAt(this.clock));
     const inp = this.monitor ? this.idleInput || (this.idleInput = { mdx: 0, mdy: 0 }) : this.inp;
+    this.edgeTurn(dt);
     P.update(dt, inp);
     this.weapons.update(dt, inp);
     this.power.update(dt);
@@ -12479,6 +12546,7 @@ class Game {
     mp.advanceClock(dt);
     this.daylight = this.daylightAt(this.clock);
     this.world.updateSky(this.daylight, this.duskAt(this.clock));
+    this.edgeTurn(dt);
     P.update(dt, this.state === 'playing' ? this.inp : this.idleInput || (this.idleInput = { mdx: 0, mdy: 0 }));
     this.weapons.update(dt, this.inp);
     this.power.update(dt);
