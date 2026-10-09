@@ -1,0 +1,6 @@
+Fuentes incluidas (descargadas de Google Fonts):
+
+- Special Elite, de Astigmatic. Licencia Apache 2.0.
+  https://fonts.google.com/specimen/Special+Elite
+- IM Fell English SC, de Igino Marini. SIL Open Font License 1.1.
+  https://fonts.google.com/specimen/IM+Fell+English+SC
